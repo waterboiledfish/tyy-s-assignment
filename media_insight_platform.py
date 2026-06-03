@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """传媒资讯交互数据分析平台.
 
 期末作品：Tkinter + Matplotlib + Turtle 综合创作。
@@ -17,6 +18,7 @@ from typing import Iterable
 import matplotlib
 
 matplotlib.use("TkAgg")
+from matplotlib import font_manager
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
@@ -26,6 +28,10 @@ CHART_BAR = "热度柱状图"
 CHART_DONUT = "题材圆环图"
 CHART_TREND = "周浏览趋势"
 CHART_CHANNEL = "渠道对比图"
+
+DAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+DEFAULT_CHANNELS = ["短视频号", "新闻客户端", "融媒直播间", "电视栏目"]
+DEFAULT_CATEGORIES = ["民生", "体育", "科技", "文化", "教育", "财经"]
 
 
 @dataclass(frozen=True)
@@ -39,6 +45,30 @@ class MediaItem:
     shares: int
     duration_min: int
     day: str
+
+
+def setup_chinese_font():
+    """Use a real Chinese font so chart labels do not become square boxes."""
+    font_paths = [
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\msyh.ttf",
+        r"C:\Windows\Fonts\simhei.ttf",
+        r"C:\Windows\Fonts\simsun.ttc",
+    ]
+    for font_path in font_paths:
+        if Path(font_path).exists():
+            font_manager.fontManager.addfont(font_path)
+            font_prop = font_manager.FontProperties(fname=font_path)
+            matplotlib.rcParams["font.family"] = font_prop.get_name()
+            matplotlib.rcParams["font.sans-serif"] = [font_prop.get_name()]
+            matplotlib.rcParams["axes.unicode_minus"] = False
+            return font_prop
+    matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "SimSun", "Arial Unicode MS"]
+    matplotlib.rcParams["axes.unicode_minus"] = False
+    return font_manager.FontProperties(family="Microsoft YaHei")
+
+
+CHINESE_FONT = setup_chinese_font()
 
 
 MEDIA_DATA: list[MediaItem] = [
@@ -81,7 +111,6 @@ SAMPLE_CASES = [
 
 
 def heat_score(item: MediaItem) -> float:
-    """计算综合传播热度，兼顾浏览、互动和内容时长。"""
     interaction = item.likes * 0.45 + item.comments * 1.8 + item.shares * 2.2
     duration_bonus = min(item.duration_min, 20) * 120
     return round(item.views * 0.08 + interaction + duration_bonus, 2)
@@ -101,18 +130,64 @@ def format_number(value: int | float) -> str:
     return f"{value:,.0f}"
 
 
-def categories() -> list[str]:
-    return [ALL] + sorted({item.category for item in MEDIA_DATA})
+def chart_label(text: str, limit: int = 8) -> str:
+    compact = text.strip()
+    if len(compact) <= 4:
+        return compact
+    if len(compact) <= limit:
+        return compact[:4] + "\n" + compact[4:]
+    return compact[:4] + "\n" + compact[4:limit] + "..."
 
 
-def channels() -> list[str]:
-    return [ALL] + sorted({item.channel for item in MEDIA_DATA})
+def safe_int(value, default: int = 0) -> int:
+    if value is None:
+        return default
+    text = str(value).strip().replace(",", "").replace("，", "")
+    if not text:
+        return default
+    try:
+        return max(0, int(float(text)))
+    except ValueError:
+        return default
 
 
-def filter_items(category: str, channel: str, keyword: str) -> list[MediaItem]:
+def guess_category(title: str, fallback: str = "综合") -> str:
+    rules = {
+        "民生": ["城市", "服务", "天气", "通勤", "社区", "地铁", "养老"],
+        "体育": ["体育", "篮球", "足球", "女足", "运动", "赛事", "比赛"],
+        "科技": ["AI", "智能", "科技", "低空", "眼镜", "游戏"],
+        "文化": ["文化", "文旅", "非遗", "博物馆", "纪录片", "音乐", "国潮"],
+        "教育": ["校园", "高校", "教育", "研学", "夜校", "心理"],
+        "财经": ["财经", "消费", "经济", "理财", "品牌", "新能源"],
+    }
+    for category, keywords in rules.items():
+        if any(keyword.lower() in title.lower() for keyword in keywords):
+            return category
+    return fallback
+
+
+def guess_channel(title: str, fallback: str = "导入数据") -> str:
+    if "直播" in title:
+        return "融媒直播间"
+    if "短视频" in title or "片花" in title or "测评" in title:
+        return "短视频号"
+    if "访谈" in title or "栏目" in title or "专题" in title:
+        return "电视栏目"
+    return fallback
+
+
+def categories(data: Iterable[MediaItem]) -> list[str]:
+    return [ALL] + sorted({item.category for item in data})
+
+
+def channels(data: Iterable[MediaItem]) -> list[str]:
+    return [ALL] + sorted({item.channel for item in data})
+
+
+def filter_items(data: Iterable[MediaItem], category: str, channel: str, keyword: str) -> list[MediaItem]:
     keyword = keyword.strip().lower()
     filtered: list[MediaItem] = []
-    for item in MEDIA_DATA:
+    for item in data:
         category_ok = category == ALL or item.category == category
         channel_ok = channel == ALL or item.channel == channel
         keyword_ok = not keyword or keyword in item.title.lower()
@@ -130,7 +205,7 @@ def summarize(items: Iterable[MediaItem]) -> dict[str, float]:
     total_comments = sum(item.comments for item in rows)
     total_shares = sum(item.shares for item in rows)
     avg_heat = sum(heat_score(item) for item in rows) / len(rows)
-    share_rate = total_shares / total_views * 100
+    share_rate = total_shares / total_views * 100 if total_views else 0
     return {
         "count": len(rows),
         "views": total_views,
@@ -149,10 +224,10 @@ def category_heat(items: Iterable[MediaItem]) -> dict[str, float]:
 
 
 def day_views(items: Iterable[MediaItem]) -> dict[str, int]:
-    days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    totals = {day: 0 for day in days}
+    totals = {day: 0 for day in DAYS}
     for item in items:
-        totals[item.day] += item.views
+        day = item.day if item.day in totals else DAYS[len(totals) % len(DAYS)]
+        totals[day] = totals.get(day, 0) + item.views
     return totals
 
 
@@ -163,19 +238,90 @@ def channel_views(items: Iterable[MediaItem]) -> dict[str, int]:
     return totals
 
 
+def normalized_row_value(row: dict, names: list[str], default=""):
+    compact = {str(key).strip().lower(): value for key, value in row.items() if key is not None}
+    for name in names:
+        if name.lower() in compact:
+            return compact[name.lower()]
+    return default
+
+
+def row_to_media_item(row: dict, index: int) -> MediaItem:
+    title = str(normalized_row_value(row, ["标题", "资讯标题", "作品标题", "title", "name"], f"导入资讯{index + 1}")).strip()
+    if not title:
+        title = f"导入资讯{index + 1}"
+    category = str(normalized_row_value(row, ["题材", "分类", "类别", "category"], "")).strip() or guess_category(title)
+    channel = str(normalized_row_value(row, ["渠道", "发布渠道", "平台", "channel"], "")).strip() or guess_channel(title)
+    views = safe_int(normalized_row_value(row, ["浏览量", "播放量", "阅读量", "views", "view"], 60000 + index * 8000), 60000 + index * 8000)
+    likes = safe_int(normalized_row_value(row, ["点赞", "点赞数", "likes", "like"], max(1000, views // 16)), max(1000, views // 16))
+    comments = safe_int(normalized_row_value(row, ["评论", "评论数", "comments", "comment"], max(100, views // 90)), max(100, views // 90))
+    shares = safe_int(normalized_row_value(row, ["转发", "分享", "转发数", "shares", "share"], max(100, views // 70)), max(100, views // 70))
+    duration = safe_int(normalized_row_value(row, ["时长", "时长分钟", "duration", "duration_min"], 5), 5)
+    day = str(normalized_row_value(row, ["日期", "星期", "day"], DAYS[index % len(DAYS)])).strip()
+    if day not in DAYS:
+        day = DAYS[index % len(DAYS)]
+    return MediaItem(title, category, channel, views, likes, comments, shares, duration, day)
+
+
+def read_csv_items(path: Path) -> list[MediaItem]:
+    encodings = ["utf-8-sig", "utf-8", "gbk"]
+    last_error: Exception | None = None
+    for encoding in encodings:
+        try:
+            with path.open("r", newline="", encoding=encoding) as file:
+                rows = list(csv.DictReader(file))
+            return [row_to_media_item(row, index) for index, row in enumerate(rows) if any(str(v).strip() for v in row.values() if v is not None)]
+        except Exception as exc:
+            last_error = exc
+    raise ValueError(f"CSV 文件读取失败：{last_error}")
+
+
+def read_excel_items(path: Path) -> list[MediaItem]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise ImportError("读取 Excel 需要安装 openpyxl，请运行：python -m pip install openpyxl") from exc
+
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    sheet = workbook.active
+    rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        return []
+    headers = [str(value).strip() if value is not None else "" for value in rows[0]]
+    result = []
+    for index, values in enumerate(rows[1:]):
+        row = {headers[col]: values[col] if col < len(values) else "" for col in range(len(headers))}
+        if any(str(value).strip() for value in row.values() if value is not None):
+            result.append(row_to_media_item(row, index))
+    return result
+
+
+def load_media_file(path: str) -> list[MediaItem]:
+    file_path = Path(path)
+    suffix = file_path.suffix.lower()
+    if suffix == ".csv":
+        return read_csv_items(file_path)
+    if suffix in {".xlsx", ".xlsm"}:
+        return read_excel_items(file_path)
+    raise ValueError("目前支持 CSV、XLSX、XLSM 文件。")
+
+
 class MediaInsightApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        self.tk.call("tk", "scaling", 1.12)
         self.title("传媒资讯交互数据分析平台")
-        self.geometry("1260x800")
-        self.minsize(1050, 690)
+        self.geometry("1380x860")
+        self.minsize(1180, 760)
 
+        self.all_items: list[MediaItem] = list(MEDIA_DATA)
         self.current_items: list[MediaItem] = list(MEDIA_DATA)
         self.chart_canvas: FigureCanvasTkAgg | None = None
 
         self._configure_style()
         self._build_menu()
         self._build_layout()
+        self.refresh_filter_options()
         self.refresh_data()
 
     def _configure_style(self) -> None:
@@ -184,7 +330,6 @@ class MediaInsightApp(tk.Tk):
             "panel": "#ffffff",
             "ink": "#14233a",
             "muted": "#66758a",
-            "line": "#d8e2ef",
             "blue": "#1f6fb2",
             "green": "#1b9a76",
             "gold": "#d99a18",
@@ -199,11 +344,12 @@ class MediaInsightApp(tk.Tk):
         style.configure("TLabel", background=self.colors["bg"], foreground=self.colors["ink"], font=("Microsoft YaHei UI", 10))
         style.configure("Panel.TLabel", background=self.colors["panel"], foreground=self.colors["ink"], font=("Microsoft YaHei UI", 10))
         style.configure("Muted.TLabel", background=self.colors["panel"], foreground=self.colors["muted"], font=("Microsoft YaHei UI", 9))
-        style.configure("Title.TLabel", background=self.colors["bg"], foreground=self.colors["ink"], font=("Microsoft YaHei UI", 20, "bold"))
+        style.configure("Title.TLabel", background=self.colors["bg"], foreground=self.colors["ink"], font=("Microsoft YaHei UI", 22, "bold"))
         style.configure("Subtitle.TLabel", background=self.colors["bg"], foreground=self.colors["muted"], font=("Microsoft YaHei UI", 10))
         style.configure("Section.TLabel", background=self.colors["panel"], foreground=self.colors["ink"], font=("Microsoft YaHei UI", 12, "bold"))
-        style.configure("Metric.TLabel", background=self.colors["panel"], foreground=self.colors["blue"], font=("Microsoft YaHei UI", 15, "bold"))
-        style.configure("TButton", font=("Microsoft YaHei UI", 10), padding=(12, 8), borderwidth=0)
+        style.configure("Metric.TLabel", background=self.colors["panel"], foreground=self.colors["blue"], font=("Microsoft YaHei UI", 16, "bold"))
+        style.configure("TButton", font=("Microsoft YaHei UI", 10), padding=(11, 8), borderwidth=0)
+        style.configure("Large.TButton", font=("Microsoft YaHei UI", 10, "bold"), padding=(12, 10), borderwidth=0)
         style.configure("Accent.TButton", background=self.colors["blue"], foreground="#ffffff")
         style.configure("Soft.TButton", background="#e9f1fb", foreground=self.colors["blue"])
         style.map("Accent.TButton", background=[("active", "#16598e")])
@@ -219,7 +365,9 @@ class MediaInsightApp(tk.Tk):
     def _build_menu(self) -> None:
         menu_bar = tk.Menu(self)
         file_menu = tk.Menu(menu_bar, tearoff=0)
+        file_menu.add_command(label="导入数据文件", command=self.import_data_file)
         file_menu.add_command(label="导出当前数据 CSV", command=self.export_csv)
+        file_menu.add_command(label="生成导入模板", command=self.create_import_template)
         file_menu.add_separator()
         file_menu.add_command(label="退出", command=self.destroy)
         help_menu = tk.Menu(menu_bar, tearoff=0)
@@ -229,53 +377,58 @@ class MediaInsightApp(tk.Tk):
         self.config(menu=menu_bar)
 
     def _build_layout(self) -> None:
-        header = ttk.Frame(self, padding=(22, 18, 22, 10))
+        header = ttk.Frame(self, padding=(22, 16, 22, 8))
         header.pack(fill=tk.X)
         title_box = ttk.Frame(header)
         title_box.pack(side=tk.LEFT)
         ttk.Label(title_box, text="传媒资讯交互数据分析平台", style="Title.TLabel").pack(anchor=tk.W)
-        ttk.Label(title_box, text="面向新闻 / 广电专业的选题复盘、传播热度与视觉创作小工具", style="Subtitle.TLabel").pack(anchor=tk.W, pady=(4, 0))
-        ttk.Label(header, text=f"示例数据 {len(MEDIA_DATA)} 条", foreground=self.colors["blue"], background=self.colors["bg"], font=("Microsoft YaHei UI", 11, "bold")).pack(side=tk.RIGHT)
+        ttk.Label(title_box, text="支持示例数据和外部 CSV / Excel 数据导入", style="Subtitle.TLabel").pack(anchor=tk.W, pady=(4, 0))
+        self.data_count_var = tk.StringVar()
+        ttk.Label(header, textvariable=self.data_count_var, foreground=self.colors["blue"], background=self.colors["bg"], font=("Microsoft YaHei UI", 11, "bold")).pack(side=tk.RIGHT)
 
-        body = ttk.Frame(self, padding=(22, 8, 22, 12))
+        body = ttk.Frame(self, padding=(22, 6, 22, 12))
         body.pack(fill=tk.BOTH, expand=True)
 
-        controls = ttk.Frame(body, style="Panel.TFrame", padding=16)
+        controls = ttk.Frame(body, style="Panel.TFrame", padding=14, width=290)
         controls.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 14))
+        controls.pack_propagate(False)
 
         ttk.Label(controls, text="筛选与操作", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
-        ttk.Label(controls, text="选择一个场景，快速生成分析视图", style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 12))
+        ttk.Label(controls, text="先导入或选择场景，再生成图表", style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 12))
 
         self.category_var = tk.StringVar(value=ALL)
         self.channel_var = tk.StringVar(value=ALL)
         self.keyword_var = tk.StringVar()
         self.chart_type_var = tk.StringVar(value=CHART_BAR)
 
-        self._combo(controls, "题材分类", self.category_var, categories())
-        self._combo(controls, "发布渠道", self.channel_var, channels())
+        self.category_combo = self._combo(controls, "题材分类", self.category_var, [])
+        self.channel_combo = self._combo(controls, "发布渠道", self.channel_var, [])
         self._entry(controls, "标题关键词", self.keyword_var)
 
-        ttk.Button(controls, text="查询数据", style="Accent.TButton", command=self.refresh_data).pack(fill=tk.X, pady=(14, 6))
-        ttk.Button(controls, text="重置条件", style="Soft.TButton", command=self.reset_filters).pack(fill=tk.X, pady=6)
-
-        self._separator(controls)
-        ttk.Label(controls, text="图表类型", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 8))
-        for text in [CHART_BAR, CHART_DONUT, CHART_TREND, CHART_CHANNEL]:
-            ttk.Radiobutton(controls, text=text, variable=self.chart_type_var, value=text, command=self.draw_chart).pack(anchor=tk.W, pady=4)
-        ttk.Button(controls, text="生成分析图表", style="Soft.TButton", command=self.draw_chart).pack(fill=tk.X, pady=(12, 6))
+        ttk.Button(controls, text="查询数据", style="Accent.TButton", command=self.refresh_data).pack(fill=tk.X, pady=(12, 5))
+        ttk.Button(controls, text="导入数据文件", style="Soft.TButton", command=self.import_data_file).pack(fill=tk.X, pady=5)
+        ttk.Button(controls, text="生成导入模板", style="Soft.TButton", command=self.create_import_template).pack(fill=tk.X, pady=5)
+        ttk.Button(controls, text="重置为示例数据", command=self.reset_to_default_data).pack(fill=tk.X, pady=5)
 
         self._separator(controls)
         ttk.Label(controls, text="答辩展示", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 8))
-        ttk.Button(controls, text="绘制传媒主题标识", command=self.draw_turtle_logo).pack(fill=tk.X, pady=6)
-        ttk.Button(controls, text="查看结论建议", command=self.show_recommendation).pack(fill=tk.X, pady=6)
+        ttk.Button(controls, text="绘制传媒主题标识", style="Large.TButton", command=self.draw_turtle_logo).pack(fill=tk.X, pady=5, ipady=1)
+        ttk.Button(controls, text="查看结论建议", style="Large.TButton", command=self.show_recommendation).pack(fill=tk.X, pady=5, ipady=1)
+
+        self._separator(controls)
+        ttk.Label(controls, text="图表类型", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 8))
+        chart_grid = ttk.Frame(controls, style="Panel.TFrame")
+        chart_grid.pack(fill=tk.X)
+        for index, text in enumerate([CHART_BAR, CHART_DONUT, CHART_TREND, CHART_CHANNEL]):
+            ttk.Radiobutton(chart_grid, text=text, variable=self.chart_type_var, value=text, command=self.draw_chart).grid(row=index // 2, column=index % 2, sticky=tk.W, padx=(0, 12), pady=3)
+        ttk.Button(controls, text="生成分析图表", style="Soft.TButton", command=self.draw_chart).pack(fill=tk.X, pady=(10, 4))
 
         right = ttk.Frame(body)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
         self._build_metrics(right)
         self._build_tabs(right)
 
-        self.status_var = tk.StringVar(value="已加载示例数据，等待查询。")
+        self.status_var = tk.StringVar(value="已加载示例数据。")
         status = ttk.Frame(self, padding=(22, 0, 22, 12))
         status.pack(fill=tk.X)
         ttk.Label(status, textvariable=self.status_var, foreground=self.colors["muted"], background=self.colors["bg"]).pack(anchor=tk.W)
@@ -302,7 +455,6 @@ class MediaInsightApp(tk.Tk):
     def _build_tabs(self, parent: ttk.Frame) -> None:
         notebook = ttk.Notebook(parent)
         notebook.pack(fill=tk.BOTH, expand=True, pady=(14, 0))
-
         table_tab = ttk.Frame(notebook, padding=10)
         chart_tab = ttk.Frame(notebook, padding=10)
         samples_tab = ttk.Frame(notebook, padding=10)
@@ -350,11 +502,9 @@ class MediaInsightApp(tk.Tk):
         self.sample_detail.pack(fill=tk.BOTH, expand=True)
         self.sample_detail.insert(
             tk.END,
-            "点击上方示例场景，可自动填充筛选条件。答辩时可以依次演示：\n\n"
-            "1. 选择不同题材，观察热度柱状图变化。\n"
-            "2. 切换到周浏览趋势，说明循环统计的结果。\n"
-            "3. 点击查看结论建议，展示选择结构和业务解释。\n"
-            "4. 点击 Turtle 绘图按钮，展示创意视觉绘制功能。",
+            "点击上方示例场景，可自动填充筛选条件。\n\n"
+            "导入数据文件说明：支持 CSV / Excel。表头建议使用：标题、题材、渠道、浏览量、点赞、评论、转发、时长、日期。\n"
+            "如果缺少题材或渠道，程序会根据标题关键词自动推断；如果缺少互动数据，程序会按浏览量生成合理默认值。",
         )
         self.sample_detail.configure(state=tk.DISABLED)
 
@@ -362,23 +512,35 @@ class MediaInsightApp(tk.Tk):
         self.explain.pack(fill=tk.BOTH, expand=True)
         self.explain.insert(
             tk.END,
-            "本作品围绕传媒资讯业务数据展开，使用列表和数据类组织模拟数据，"
-            "通过自定义函数完成筛选、统计、热度计算和图表绘制。界面支持题材、渠道、关键词查询，"
-            "并提供柱状图、圆环图、趋势图和渠道对比图。Turtle 模块用于绘制融媒体主题标识，"
-            "体现数据分析与视觉创作的综合应用。",
+            "本作品围绕传媒资讯业务数据展开，使用列表和数据类组织数据，"
+            "通过自定义函数完成筛选、导入、统计、热度计算和图表绘制。"
+            "Matplotlib 图表已指定中文字体，避免标题、坐标轴和图例显示为方框。",
         )
         self.explain.configure(state=tk.DISABLED)
 
-    def _combo(self, parent: ttk.Frame, label: str, variable: tk.StringVar, values: list[str]) -> None:
+    def _combo(self, parent: ttk.Frame, label: str, variable: tk.StringVar, values: list[str]):
         ttk.Label(parent, text=label, style="Panel.TLabel").pack(anchor=tk.W, pady=(10, 4))
-        ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", width=20).pack(fill=tk.X)
+        combo = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", width=20)
+        combo.pack(fill=tk.X)
+        return combo
 
     def _entry(self, parent: ttk.Frame, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label, style="Panel.TLabel").pack(anchor=tk.W, pady=(10, 4))
         ttk.Entry(parent, textvariable=variable).pack(fill=tk.X, ipady=3)
 
     def _separator(self, parent: ttk.Frame) -> None:
-        ttk.Separator(parent).pack(fill=tk.X, pady=16)
+        ttk.Separator(parent).pack(fill=tk.X, pady=12)
+
+    def refresh_filter_options(self) -> None:
+        old_category = self.category_var.get() if hasattr(self, "category_var") else ALL
+        old_channel = self.channel_var.get() if hasattr(self, "channel_var") else ALL
+        category_values = categories(self.all_items)
+        channel_values = channels(self.all_items)
+        self.category_combo.configure(values=category_values)
+        self.channel_combo.configure(values=channel_values)
+        self.category_var.set(old_category if old_category in category_values else ALL)
+        self.channel_var.set(old_channel if old_channel in channel_values else ALL)
+        self.data_count_var.set(f"当前数据 {len(self.all_items)} 条")
 
     def apply_sample_case(self, _event=None) -> None:
         selection = self.samples.curselection()
@@ -409,15 +571,17 @@ class MediaInsightApp(tk.Tk):
         self.refresh_data()
         self.status_var.set(f"已应用示例：{name}。{detail}")
 
-    def reset_filters(self) -> None:
+    def reset_to_default_data(self) -> None:
+        self.all_items = list(MEDIA_DATA)
+        self.keyword_var.set("")
         self.category_var.set(ALL)
         self.channel_var.set(ALL)
-        self.keyword_var.set("")
-        self.chart_type_var.set(CHART_BAR)
+        self.refresh_filter_options()
         self.refresh_data()
+        self.status_var.set("已恢复为内置示例数据。")
 
     def refresh_data(self) -> None:
-        self.current_items = filter_items(self.category_var.get(), self.channel_var.get(), self.keyword_var.get())
+        self.current_items = filter_items(self.all_items, self.category_var.get(), self.channel_var.get(), self.keyword_var.get())
         self.tree.delete(*self.tree.get_children())
         for index, item in enumerate(self.current_items):
             score = heat_score(item)
@@ -453,13 +617,11 @@ class MediaInsightApp(tk.Tk):
     def draw_chart(self) -> None:
         for child in self.chart_area.winfo_children():
             child.destroy()
-
-        figure = Figure(figsize=(8.8, 5.1), dpi=100, facecolor="#ffffff")
+        figure = Figure(figsize=(9.1, 5.3), dpi=130, facecolor="#ffffff")
         axis = figure.add_subplot(111)
         chart_type = self.chart_type_var.get()
-
         if not self.current_items:
-            axis.text(0.5, 0.5, "暂无符合条件的数据", ha="center", va="center", fontsize=14)
+            axis.text(0.5, 0.5, "暂无符合条件的数据", ha="center", va="center", fontsize=14, fontproperties=CHINESE_FONT)
             axis.set_axis_off()
         elif chart_type == CHART_DONUT:
             self._draw_donut(axis)
@@ -469,7 +631,6 @@ class MediaInsightApp(tk.Tk):
             self._draw_channel(axis)
         else:
             self._draw_bar(axis)
-
         figure.tight_layout()
         self.chart_canvas = FigureCanvasTkAgg(figure, master=self.chart_area)
         self.chart_canvas.draw()
@@ -477,13 +638,15 @@ class MediaInsightApp(tk.Tk):
 
     def _draw_bar(self, axis) -> None:
         sorted_items = sorted(self.current_items, key=heat_score, reverse=True)[:10]
-        labels = [item.title[:8] + ("…" if len(item.title) > 8 else "") for item in sorted_items]
+        labels = [chart_label(item.title) for item in sorted_items]
         scores = [heat_score(item) for item in sorted_items]
         colors = ["#1f6fb2" if heat_level(score) == "爆款" else "#2f90c8" for score in scores]
         bars = axis.bar(labels, scores, color=colors, width=0.58)
-        axis.set_title("资讯作品综合热度 TOP10", fontproperties="Microsoft YaHei", fontsize=14, pad=14)
-        axis.set_ylabel("热度分", fontproperties="Microsoft YaHei")
-        axis.tick_params(axis="x", rotation=25)
+        axis.set_title("资讯作品综合热度 TOP10", fontproperties=CHINESE_FONT, fontsize=16, pad=14)
+        axis.set_ylabel("热度分", fontproperties=CHINESE_FONT, fontsize=11)
+        axis.tick_params(axis="x", rotation=0, labelsize=9)
+        for label in axis.get_xticklabels() + axis.get_yticklabels():
+            label.set_fontproperties(CHINESE_FONT)
         axis.grid(axis="y", linestyle="--", alpha=0.25)
         axis.spines["top"].set_visible(False)
         axis.spines["right"].set_visible(False)
@@ -496,9 +659,9 @@ class MediaInsightApp(tk.Tk):
         values = list(totals.values())
         colors = ["#1f6fb2", "#1b9a76", "#d99a18", "#d85d55", "#6f63bf", "#607080"]
         wedges, _ = axis.pie(values, startangle=90, colors=colors[: len(values)], wedgeprops={"width": 0.42, "edgecolor": "white"})
-        axis.set_title("不同题材平均传播热度占比", fontproperties="Microsoft YaHei", fontsize=14, pad=14)
-        axis.legend(wedges, labels, loc="center left", bbox_to_anchor=(0.92, 0.5), frameon=False)
-        axis.text(0, 0, "题材\n热度", ha="center", va="center", fontsize=13, fontproperties="Microsoft YaHei", color="#17406d")
+        axis.set_title("不同题材平均传播热度占比", fontproperties=CHINESE_FONT, fontsize=16, pad=14)
+        axis.legend(wedges, labels, loc="center left", bbox_to_anchor=(0.92, 0.5), frameon=False, prop=CHINESE_FONT)
+        axis.text(0, 0, "题材\n热度", ha="center", va="center", fontsize=13, fontproperties=CHINESE_FONT, color="#17406d")
 
     def _draw_trend(self, axis) -> None:
         totals = day_views(self.current_items)
@@ -506,8 +669,10 @@ class MediaInsightApp(tk.Tk):
         values = [totals[day] for day in days]
         axis.plot(days, values, marker="o", linewidth=2.6, color="#1b9a76")
         axis.fill_between(days, values, color="#1b9a76", alpha=0.15)
-        axis.set_title("一周资讯浏览量趋势", fontproperties="Microsoft YaHei", fontsize=14, pad=14)
-        axis.set_ylabel("浏览量", fontproperties="Microsoft YaHei")
+        axis.set_title("一周资讯浏览量趋势", fontproperties=CHINESE_FONT, fontsize=16, pad=14)
+        axis.set_ylabel("浏览量", fontproperties=CHINESE_FONT, fontsize=11)
+        for label in axis.get_xticklabels() + axis.get_yticklabels():
+            label.set_fontproperties(CHINESE_FONT)
         axis.grid(axis="y", linestyle="--", alpha=0.25)
         axis.spines["top"].set_visible(False)
         axis.spines["right"].set_visible(False)
@@ -518,52 +683,54 @@ class MediaInsightApp(tk.Tk):
         totals = channel_views(self.current_items)
         labels = list(totals.keys())
         values = list(totals.values())
-        bars = axis.barh(labels, values, color=["#1f6fb2", "#1b9a76", "#d99a18", "#d85d55"][: len(labels)])
-        axis.set_title("不同发布渠道浏览量对比", fontproperties="Microsoft YaHei", fontsize=14, pad=14)
-        axis.set_xlabel("浏览量", fontproperties="Microsoft YaHei")
+        bars = axis.barh(labels, values, color=["#1f6fb2", "#1b9a76", "#d99a18", "#d85d55", "#6f63bf"][: len(labels)])
+        axis.set_title("不同发布渠道浏览量对比", fontproperties=CHINESE_FONT, fontsize=16, pad=14)
+        axis.set_xlabel("浏览量", fontproperties=CHINESE_FONT, fontsize=11)
+        for label in axis.get_xticklabels() + axis.get_yticklabels():
+            label.set_fontproperties(CHINESE_FONT)
         axis.grid(axis="x", linestyle="--", alpha=0.25)
         axis.spines["top"].set_visible(False)
         axis.spines["right"].set_visible(False)
         for bar, value in zip(bars, values):
             axis.text(bar.get_width(), bar.get_y() + bar.get_height() / 2, f" {format_number(value)}", va="center", fontsize=9)
 
-    def draw_turtle_logo(self) -> None:
+    def import_data_file(self) -> None:
+        path = filedialog.askopenfilename(
+            title="选择要导入的数据文件",
+            filetypes=[("数据文件", "*.csv *.xlsx *.xlsm"), ("CSV 文件", "*.csv"), ("Excel 文件", "*.xlsx *.xlsm")],
+        )
+        if not path:
+            return
         try:
-            import turtle
+            imported_items = load_media_file(path)
+        except Exception as exc:
+            messagebox.showerror("导入失败", str(exc))
+            return
+        if not imported_items:
+            messagebox.showwarning("导入失败", "文件中没有可转换的数据。")
+            return
+        self.all_items = imported_items
+        self.keyword_var.set("")
+        self.category_var.set(ALL)
+        self.channel_var.set(ALL)
+        self.refresh_filter_options()
+        self.refresh_data()
+        messagebox.showinfo("导入成功", f"已导入并转换 {len(imported_items)} 条传媒数据。")
 
-            screen = turtle.Screen()
-            screen.title("Turtle 融媒体主题标识")
-            screen.bgcolor("#eef3f8")
-            pen = turtle.Turtle()
-            pen.speed(0)
-            pen.hideturtle()
-            pen.pensize(3)
-
-            colors = ["#1f6fb2", "#1b9a76", "#d99a18", "#d85d55"]
-            for index, color in enumerate(colors):
-                pen.penup()
-                pen.goto(0, -110 + index * 18)
-                pen.pendown()
-                pen.color(color)
-                pen.circle(110 - index * 15)
-
-            for angle in range(0, 360, 45):
-                radians = math.radians(angle)
-                pen.penup()
-                pen.goto(0, 0)
-                pen.pendown()
-                pen.color("#17406d")
-                pen.goto(math.cos(radians) * 145, math.sin(radians) * 145)
-                pen.dot(12, "#d85d55")
-
-            pen.penup()
-            pen.goto(-58, -22)
-            pen.color("#17406d")
-            pen.write("MEDIA", font=("Arial", 22, "bold"))
-            pen.goto(-74, -54)
-            pen.write("INSIGHT", font=("Arial", 18, "normal"))
-        except Exception as exc:  # pragma: no cover - GUI/turtle environment dependent
-            messagebox.showerror("绘图失败", f"Turtle 绘图窗口无法打开：{exc}")
+    def create_import_template(self) -> None:
+        path = filedialog.asksaveasfilename(title="保存导入模板", defaultextension=".csv", initialfile="传媒数据导入模板.csv", filetypes=[("CSV 文件", "*.csv")])
+        if not path:
+            return
+        rows = [
+            ["标题", "题材", "渠道", "浏览量", "点赞", "评论", "转发", "时长", "日期"],
+            ["校园短视频采访", "教育", "短视频号", 120000, 8600, 1300, 2100, 4, "周一"],
+            ["城市服务直播", "民生", "融媒直播间", 180000, 12600, 2400, 3600, 30, "周三"],
+            ["文旅专题报道", "文化", "新闻客户端", 96000, 6200, 900, 1400, 6, "周五"],
+        ]
+        with Path(path).open("w", newline="", encoding="utf-8-sig") as file:
+            writer = csv.writer(file)
+            writer.writerows(rows)
+        messagebox.showinfo("模板已生成", "已生成 CSV 导入模板。可以改里面的数据后再导入。")
 
     def export_csv(self) -> None:
         path = filedialog.asksaveasfilename(title="导出当前数据", defaultextension=".csv", filetypes=[("CSV 文件", "*.csv")])
@@ -576,6 +743,40 @@ class MediaInsightApp(tk.Tk):
                 score = heat_score(item)
                 writer.writerow([item.title, item.category, item.channel, item.views, item.likes, item.comments, item.shares, item.duration_min, item.day, score, heat_level(score)])
         messagebox.showinfo("导出成功", f"已导出 {len(self.current_items)} 条数据。")
+
+    def draw_turtle_logo(self) -> None:
+        try:
+            import turtle
+            screen = turtle.Screen()
+            screen.title("Turtle 融媒体主题标识")
+            screen.bgcolor("#eef3f8")
+            pen = turtle.Turtle()
+            pen.speed(0)
+            pen.hideturtle()
+            pen.pensize(3)
+            colors = ["#1f6fb2", "#1b9a76", "#d99a18", "#d85d55"]
+            for index, color in enumerate(colors):
+                pen.penup()
+                pen.goto(0, -110 + index * 18)
+                pen.pendown()
+                pen.color(color)
+                pen.circle(110 - index * 15)
+            for angle in range(0, 360, 45):
+                radians = math.radians(angle)
+                pen.penup()
+                pen.goto(0, 0)
+                pen.pendown()
+                pen.color("#17406d")
+                pen.goto(math.cos(radians) * 145, math.sin(radians) * 145)
+                pen.dot(12, "#d85d55")
+            pen.penup()
+            pen.goto(-58, -22)
+            pen.color("#17406d")
+            pen.write("MEDIA", font=("Arial", 22, "bold"))
+            pen.goto(-74, -54)
+            pen.write("INSIGHT", font=("Arial", 18, "normal"))
+        except Exception as exc:
+            messagebox.showerror("绘图失败", f"Turtle 绘图窗口无法打开：{exc}")
 
     def show_recommendation(self) -> None:
         if not self.current_items:
@@ -591,7 +792,7 @@ class MediaInsightApp(tk.Tk):
         )
 
     def show_about(self) -> None:
-        messagebox.showinfo("作品说明", "本程序使用 Tkinter 搭建主界面，Matplotlib 完成数据可视化，Turtle 完成传媒主题创意绘图。")
+        messagebox.showinfo("作品说明", "本程序使用 Tkinter 搭建主界面，Matplotlib 完成数据可视化，Turtle 完成传媒主题创意绘图，并支持 CSV / Excel 文件导入。")
 
 
 if __name__ == "__main__":

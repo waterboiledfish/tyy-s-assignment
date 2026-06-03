@@ -1,39 +1,53 @@
 @echo off
-chcp 65001 >nul
-title 传媒资讯交互数据分析平台
+title Media Insight Platform
 
-echo 正在启动：传媒资讯交互数据分析平台
+echo Starting Media Insight Platform...
 echo.
 
+set PY_CMD=
+
 python --version >nul 2>nul
-if errorlevel 1 (
-    echo 未检测到 Python。
-    echo 请先安装 Python 3.10 或更高版本，并在安装时勾选 Add Python to PATH。
-    echo 下载地址：https://www.python.org/downloads/
+if not errorlevel 1 (
+    set PY_CMD=python
+) else (
+    py --version >nul 2>nul
+    if not errorlevel 1 (
+        set PY_CMD=py
+    )
+)
+
+if "%PY_CMD%"=="" (
+    echo Python was not found.
+    echo Please install Python 3.10 or later first.
+    echo Download: https://www.python.org/downloads/
+    echo Important: check "Add Python to PATH" during installation.
     echo.
     pause
     exit /b 1
 )
 
-echo 正在检查 Matplotlib 依赖...
-python -c "import matplotlib" >nul 2>nul
+echo Using Python command: %PY_CMD%
+echo Checking required packages...
+
+%PY_CMD% -c "import matplotlib, openpyxl" >nul 2>nul
 if errorlevel 1 (
-    echo 未安装 Matplotlib，正在自动安装，请稍等...
-    python -m pip install -r requirements.txt
+    echo Installing required packages. Please wait...
+    %PY_CMD% -m pip install -r requirements.txt
     if errorlevel 1 (
         echo.
-        echo Matplotlib 自动安装失败。
-        echo 可以手动执行：python -m pip install matplotlib
+        echo Package installation failed.
+        echo Try this manually:
+        echo %PY_CMD% -m pip install matplotlib openpyxl
         echo.
         pause
         exit /b 1
     )
 )
 
-echo 依赖检查完成，正在打开程序...
+echo Opening program...
 echo.
-python media_insight_platform.py
+%PY_CMD% media_insight_platform.py
 
 echo.
-echo 程序已关闭。
+echo Program closed.
 pause
